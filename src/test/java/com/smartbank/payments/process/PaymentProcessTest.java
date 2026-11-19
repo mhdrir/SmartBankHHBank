@@ -27,7 +27,7 @@ import static org.camunda.bpm.engine.test.assertions.bpmn.BpmnAwareTests.withVar
  * The Java delegates are replaced by small lambdas via Mocks.register(...).
  *
  * Because the service tasks are asyncBefore, the engine stops in front of them and creates a JOB.
- * The job executor is off in the test, so we run each job explicitly with execute(job()).
+ * The job executor is off in the test, so we run each job explicitly with execute(job(pi)).
  */
 @ExtendWith(ProcessEngineExtension.class)
 @Deployment(resources = "bpmn/payment-process.bpmn")
@@ -66,10 +66,10 @@ class PaymentProcessTest {
         ProcessInstance pi = start();
         assertThat(pi).isWaitingAt("Task_ValidatePayment");   // async job before validation
 
-        execute(job());                                         // validate
+        execute(job(pi));                                         // validate
         assertThat(pi).isWaitingAt("Task_BookPayment");        // async job before booking
 
-        execute(job());                                         // book + complete
+        execute(job(pi));                                         // book + complete
         assertThat(pi).isEnded().hasPassed("Task_CompletePayment", "EndEvent_Completed");
     }
 
@@ -78,13 +78,13 @@ class PaymentProcessTest {
         Mocks.register("validatePaymentDelegate",
                 (JavaDelegate) e -> e.setVariable(ProcessConstants.VAR_REQUIRES_MANUAL_REVIEW, true));
         ProcessInstance pi = start();
-        execute(job());
+        execute(job(pi));
 
         assertThat(pi).isWaitingAt("Task_ManualReview");
-        assertThat(task()).hasCandidateGroup("payment-reviewers");
+        assertThat(task(pi)).hasCandidateGroup("payment-reviewers");
 
-        complete(task(), withVariables(ProcessConstants.VAR_APPROVED, true));
-        execute(job());
+        complete(task(pi), withVariables(ProcessConstants.VAR_APPROVED, true));
+        execute(job(pi));
 
         assertThat(pi).isEnded().hasPassed("Task_ManualReview", "EndEvent_Completed");
     }
@@ -94,9 +94,9 @@ class PaymentProcessTest {
         Mocks.register("validatePaymentDelegate",
                 (JavaDelegate) e -> e.setVariable(ProcessConstants.VAR_REQUIRES_MANUAL_REVIEW, true));
         ProcessInstance pi = start();
-        execute(job());
+        execute(job(pi));
 
-        complete(task(), withVariables(ProcessConstants.VAR_APPROVED, false));
+        complete(task(pi), withVariables(ProcessConstants.VAR_APPROVED, false));
 
         assertThat(pi).isEnded().hasPassed("Task_RejectPayment", "EndEvent_Rejected")
                 .hasNotPassed("Task_BookPayment");
@@ -108,7 +108,7 @@ class PaymentProcessTest {
             throw new BpmnError(ProcessConstants.ERROR_VALIDATION_FAILED, "Unknown debtor account");
         });
         ProcessInstance pi = start();
-        execute(job());
+        execute(job(pi));
 
         assertThat(pi).isEnded().hasPassed("Boundary_ValidationFailed", "Task_RejectPayment");
         // the error boundary event copied the BpmnError message into the variable "rejectionReason"
@@ -121,8 +121,8 @@ class PaymentProcessTest {
             throw new BpmnError(ProcessConstants.ERROR_INSUFFICIENT_FUNDS, "Insufficient funds");
         });
         ProcessInstance pi = start();
-        execute(job());
-        execute(job());
+        execute(job(pi));
+        execute(job(pi));
 
         assertThat(pi).isEnded().hasPassed("Boundary_BookingFailed", "EndEvent_Rejected")
                 .hasNotPassed("Task_CompletePayment");
