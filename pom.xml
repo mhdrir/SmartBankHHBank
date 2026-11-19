@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SmartBank Payments – a small "integration platform" practice project.
+
+  Stack mirrors the Hanseatic Bank job ad:
+  Java 21, Spring Boot 3, Kafka (event streaming), Camunda 7 (process orchestration),
+  PostgreSQL + Flyway, JUnit 5 / Mockito / Testcontainers, Docker, GitHub Actions, Terraform (AWS).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Spring Boot parent: manages versions of Spring, Kafka, Jackson, Testcontainers, H2, ... -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.smartbank</groupId>
+    <artifactId>smartbank-payments</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <name>smartbank-payments</name>
+    <description>Event-driven payment processing with Spring Boot, Kafka and Camunda</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <!-- Camunda 7.23 is the line that supports Spring Boot 3.4 -->
+        <camunda.version>7.23.0</camunda.version>
+        <springdoc.version>2.8.6</springdoc.version>
+    </properties>
+
+    <dependencies>
+        <!-- ===== Web / REST API ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Bean Validation (@NotBlank, @Positive, ...) for request DTOs -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <!-- OpenAPI 3 spec + Swagger UI at /swagger-ui.html -->
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- ===== Security: OAuth2 resource server (JWT bearer tokens) ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
+        <!-- ===== Persistence ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Since Flyway 10 each database has its own module -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ===== Event streaming ===== -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- ===== Process orchestration: Camunda 7 embedded engine + Cockpit/Tasklist web apps ===== -->
+        <dependency>
+            <groupId>org.camunda.bpm.springboot</groupId>
+            <artifactId>camunda-bpm-spring-boot-starter-webapp</artifactId>
+            <version>${camunda.version}</version>
+        </dependency>
+
+        <!-- ===== Operations ===== -->
+        <dependency>
+            <!-- /actuator/health, /actuator/metrics -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- ===== Tests ===== -->
+        <dependency>
+            <!-- JUnit 5, Mockito, AssertJ, MockMvc, Awaitility (version managed) -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- jwt() request post-processor for MockMvc -->
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- @ServiceConnection: Spring Boot wires container URLs automatically -->
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- JUnit 5 extension that boots an in-memory process engine for BPMN tests -->
+            <groupId>org.camunda.bpm</groupId>
+            <artifactId>camunda-bpm-junit5</artifactId>
+            <version>${camunda.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Fluent asserts: assertThat(processInstance).isWaitingAt("...") -->
+            <groupId>org.camunda.bpm</groupId>
+            <artifactId>camunda-bpm-assert</artifactId>
+            <version>${camunda.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- In-memory DB only for the standalone BPMN test -->
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <!-- Unit tests (*Test.java) run in "mvn test" -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <!-- Integration tests (*IT.java, need Docker) run in "mvn verify" -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

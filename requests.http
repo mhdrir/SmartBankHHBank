@@ -1,0 +1,67 @@
+### Requests for the IntelliJ / VS Code "REST Client" extension. Start the app with profile "local" first.
+
+### 1. Get a token (local profile only)
+POST http://localhost:8080/dev/token
+
+> {% client.global.set("token", response.body.access_token); %}
+
+### 2. Small payment (Ben -> Shop) -> COMPLETED automatically
+POST http://localhost:8080/api/v1/payments
+Authorization: Bearer {{token}}
+Idempotency-Key: demo-payment-001
+Content-Type: application/json
+
+{
+  "debtorIban": "DE02120300000000202051",
+  "creditorIban": "DE75512108001245126199",
+  "amount": 100.00,
+  "currency": "EUR",
+  "remittanceInfo": "Order 4711"
+}
+
+### 3. Same key, same body again -> 200 with the SAME payment (idempotent replay)
+POST http://localhost:8080/api/v1/payments
+Authorization: Bearer {{token}}
+Idempotency-Key: demo-payment-001
+Content-Type: application/json
+
+{
+  "debtorIban": "DE02120300000000202051",
+  "creditorIban": "DE75512108001245126199",
+  "amount": 100.00,
+  "currency": "EUR",
+  "remittanceInfo": "Order 4711"
+}
+
+### 4. High amount (Anna) -> PENDING_REVIEW, approve in Tasklist (demo/demo)
+POST http://localhost:8080/api/v1/payments
+Authorization: Bearer {{token}}
+Idempotency-Key: demo-payment-002
+Content-Type: application/json
+
+{
+  "debtorIban": "DE89370400440532013000",
+  "creditorIban": "DE75512108001245126199",
+  "amount": 15000.00,
+  "currency": "EUR"
+}
+
+### 5. Not enough money (Ben has 1,000 EUR) -> REJECTED
+POST http://localhost:8080/api/v1/payments
+Authorization: Bearer {{token}}
+Idempotency-Key: demo-payment-003
+Content-Type: application/json
+
+{
+  "debtorIban": "DE02120300000000202051",
+  "creditorIban": "DE75512108001245126199",
+  "amount": 9999.00,
+  "currency": "EUR"
+}
+
+### 6. CSV import from a partner
+POST http://localhost:8080/api/v1/payments/import
+Authorization: Bearer {{token}}
+Content-Type: text/csv
+
+< ./samples/payments.csv

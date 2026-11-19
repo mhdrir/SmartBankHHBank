@@ -1,0 +1,5 @@
+# Profile "local": enables POST /dev/token and more logging. Start with:
+#   SPRING_PROFILES_ACTIVE=local mvn spring-boot:run
+logging:
+  level:
+    com.smartbank: DEBUG

@@ -1,0 +1,76 @@
+# Configuration via environment variables with local defaults: ${ENV_VAR:default}
+# (12-factor style: the same Docker image runs locally, in test and in production; only env differs.
+#  Secrets like DB_PASSWORD / JWT_SECRET come from AWS Secrets Manager in the cloud, never from Git.)
+
+spring:
+  application:
+    name: smartbank-payments
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/smartbank}
+    username: ${DB_USER:smartbank}
+    password: ${DB_PASSWORD:smartbank}
+
+  jpa:
+    open-in-view: false            # no lazy loading in the web layer; transactions end in the service
+    hibernate:
+      ddl-auto: validate           # Flyway owns the schema; Hibernate only checks it matches the entities
+
+  flyway:
+    enabled: true                  # runs src/main/resources/db/migration/V*.sql on startup
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all                    # wait until all in-sync replicas have the record
+      properties:
+        enable.idempotence: true   # broker de-duplicates producer retries
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest  # a new consumer group starts at the beginning of the topic
+      enable-auto-commit: false    # Spring commits offsets after successful processing
+    listener:
+      ack-mode: record             # commit after each record
+
+camunda:
+  bpm:
+    admin-user:                    # login for Cockpit/Tasklist: http://localhost:8080/camunda/app/
+      id: demo
+      password: demo
+    filter:
+      create: All tasks            # a Tasklist filter so reviewers see open tasks
+    database:
+      schema-update: true          # Camunda creates/updates its own ACT_* tables
+    job-execution:
+      enabled: true                # runs asynchronous continuations, retries and timers
+    authorization:
+      enabled: false               # demo only; in a bank you would restrict who may review payments
+    generic-properties:
+      properties:
+        historyTimeToLive: P30D    # Camunda >= 7.20 requires a history cleanup time
+
+smartbank:
+  payments:
+    manual-review-threshold: 10000.00   # amounts >= 10,000 EUR need a four-eyes review
+    currency: EUR
+  security:
+    jwt-secret: ${JWT_SECRET:local-dev-secret-please-change-me-0123456789}
+  outbox:
+    poll-interval-ms: 1000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true              # /actuator/health/liveness and /readiness for ECS/Kubernetes
+
+logging:
+  level:
+    com.smartbank: INFO

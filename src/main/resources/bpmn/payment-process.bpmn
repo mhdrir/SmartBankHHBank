@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Payment process (BPMN 2.0, Camunda 7). Open it in the free Camunda Modeler to see the diagram.
+
+  Happy path: Start, Validate, [amount >= threshold?], Four-eyes review, [approved?], Book, Complete, End.
+  Rejection:  validation error, review declined or booking error (insufficient funds) all lead to
+              "Reject payment" and the end event "Payment rejected".
+
+  asyncBefore="true" on the service tasks = transaction boundary / save point: the engine commits,
+  and a job executor thread continues. Benefits: the Kafka listener returns fast, failures are retried
+  as jobs, and an incident is shown in Cockpit after the last retry.
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_PaymentProcess"
+                  targetNamespace="http://smartbank.com/bpmn"
+                  exporter="hand-written" exporterVersion="1.0">
+
+  <bpmn:process id="payment-process" name="Payment Process" isExecutable="true"
+                camunda:historyTimeToLive="P30D">
+
+    <bpmn:startEvent id="StartEvent_PaymentRequested" name="Payment requested">
+      <bpmn:outgoing>Flow_ToValidate</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="Task_ValidatePayment" name="Validate payment"
+                      camunda:asyncBefore="true"
+                      camunda:delegateExpression="${validatePaymentDelegate}">
+      <bpmn:incoming>Flow_ToValidate</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToReviewGateway</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Catches ANY BpmnError of the task (no errorRef) and stores code + message in variables -->
+    <bpmn:boundaryEvent id="Boundary_ValidationFailed" name="Invalid" attachedToRef="Task_ValidatePayment">
+      <bpmn:outgoing>Flow_ValidationFailedToReject</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorDef_Validation"
+                                 camunda:errorCodeVariable="rejectionCode"
+                                 camunda:errorMessageVariable="rejectionReason"/>
+    </bpmn:boundaryEvent>
+
+    <bpmn:exclusiveGateway id="Gateway_ReviewNeeded" name="Manual review needed?" default="Flow_NoReview">
+      <bpmn:incoming>Flow_ToReviewGateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_ReviewNeeded</bpmn:outgoing>
+      <bpmn:outgoing>Flow_NoReview</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- Four-eyes principle: a human in group "payment-reviewers" approves high amounts in Tasklist -->
+    <bpmn:userTask id="Task_ManualReview" name="Four-eyes review" camunda:candidateGroups="payment-reviewers">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="approved" label="Approve payment?" type="boolean"/>
+        </camunda:formData>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_ReviewNeeded</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToApprovedGateway</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="Gateway_Approved" name="Approved?">
+      <bpmn:incoming>Flow_ToApprovedGateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Declined</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:serviceTask id="Task_BookPayment" name="Book payment"
+                      camunda:asyncBefore="true"
+                      camunda:delegateExpression="${bookPaymentDelegate}">
+      <bpmn:extensionElements>
+        <!-- technical failures: 3 retries, 10 seconds apart, then an incident -->
+        <camunda:failedJobRetryTimeCycle>R3/PT10S</camunda:failedJobRetryTimeCycle>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_NoReview</bpmn:incoming>
+      <bpmn:incoming>Flow_Approved</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToComplete</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:boundaryEvent id="Boundary_BookingFailed" name="Booking failed" attachedToRef="Task_BookPayment">
+      <bpmn:outgoing>Flow_BookingFailedToReject</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorDef_Booking"
+                                 camunda:errorCodeVariable="rejectionCode"
+                                 camunda:errorMessageVariable="rejectionReason"/>
+    </bpmn:boundaryEvent>
+
+    <bpmn:serviceTask id="Task_CompletePayment" name="Complete payment"
+                      camunda:delegateExpression="${completePaymentDelegate}">
+      <bpmn:incoming>Flow_ToComplete</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToEndCompleted</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="EndEvent_Completed" name="Payment completed">
+      <bpmn:incoming>Flow_ToEndCompleted</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:serviceTask id="Task_RejectPayment" name="Reject payment"
+                      camunda:delegateExpression="${rejectPaymentDelegate}">
+      <bpmn:incoming>Flow_ValidationFailedToReject</bpmn:incoming>
+      <bpmn:incoming>Flow_Declined</bpmn:incoming>
+      <bpmn:incoming>Flow_BookingFailedToReject</bpmn:incoming>
+      <bpmn:outgoing>Flow_ToEndRejected</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="EndEvent_Rejected" name="Payment rejected">
+      <bpmn:incoming>Flow_ToEndRejected</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- ===== sequence flows ===== -->
+    <bpmn:sequenceFlow id="Flow_ToValidate" sourceRef="StartEvent_PaymentRequested" targetRef="Task_ValidatePayment"/>
+    <bpmn:sequenceFlow id="Flow_ToReviewGateway" sourceRef="Task_ValidatePayment" targetRef="Gateway_ReviewNeeded"/>
+    <bpmn:sequenceFlow id="Flow_ReviewNeeded" name="yes" sourceRef="Gateway_ReviewNeeded" targetRef="Task_ManualReview">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${requiresManualReview}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_NoReview" name="no" sourceRef="Gateway_ReviewNeeded" targetRef="Task_BookPayment"/>
+    <bpmn:sequenceFlow id="Flow_ToApprovedGateway" sourceRef="Task_ManualReview" targetRef="Gateway_Approved"/>
+    <bpmn:sequenceFlow id="Flow_Approved" name="yes" sourceRef="Gateway_Approved" targetRef="Task_BookPayment">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Declined" name="no" sourceRef="Gateway_Approved" targetRef="Task_RejectPayment">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_ToComplete" sourceRef="Task_BookPayment" targetRef="Task_CompletePayment"/>
+    <bpmn:sequenceFlow id="Flow_ToEndCompleted" sourceRef="Task_CompletePayment" targetRef="EndEvent_Completed"/>
+    <bpmn:sequenceFlow id="Flow_ValidationFailedToReject" sourceRef="Boundary_ValidationFailed" targetRef="Task_RejectPayment"/>
+    <bpmn:sequenceFlow id="Flow_BookingFailedToReject" sourceRef="Boundary_BookingFailed" targetRef="Task_RejectPayment"/>
+    <bpmn:sequenceFlow id="Flow_ToEndRejected" sourceRef="Task_RejectPayment" targetRef="EndEvent_Rejected"/>
+  </bpmn:process>
+
+  <!-- ===== diagram layout (only needed for drawing in Modeler/Cockpit) ===== -->
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="payment-process">
+      <bpmndi:BPMNShape id="Shape_Start" bpmnElement="StartEvent_PaymentRequested">
+        <dc:Bounds x="152" y="182" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Validate" bpmnElement="Task_ValidatePayment">
+        <dc:Bounds x="240" y="160" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundaryValidation" bpmnElement="Boundary_ValidationFailed">
+        <dc:Bounds x="272" y="222" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_GatewayReview" bpmnElement="Gateway_ReviewNeeded" isMarkerVisible="true">
+        <dc:Bounds x="395" y="175" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ManualReview" bpmnElement="Task_ManualReview">
+        <dc:Bounds x="500" y="60" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_GatewayApproved" bpmnElement="Gateway_Approved" isMarkerVisible="true">
+        <dc:Bounds x="655" y="75" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Book" bpmnElement="Task_BookPayment">
+        <dc:Bounds x="760" y="160" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_BoundaryBooking" bpmnElement="Boundary_BookingFailed">
+        <dc:Bounds x="792" y="222" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Complete" bpmnElement="Task_CompletePayment">
+        <dc:Bounds x="920" y="160" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndCompleted" bpmnElement="EndEvent_Completed">
+        <dc:Bounds x="1082" y="182" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Reject" bpmnElement="Task_RejectPayment">
+        <dc:Bounds x="760" y="340" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndRejected" bpmnElement="EndEvent_Rejected">
+        <dc:Bounds x="922" y="362" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Edge_ToValidate" bpmnElement="Flow_ToValidate">
+        <di:waypoint x="188" y="200"/>
+        <di:waypoint x="240" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ToReviewGateway" bpmnElement="Flow_ToReviewGateway">
+        <di:waypoint x="340" y="200"/>
+        <di:waypoint x="395" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ReviewNeeded" bpmnElement="Flow_ReviewNeeded">
+        <di:waypoint x="420" y="175"/>
+        <di:waypoint x="420" y="100"/>
+        <di:waypoint x="500" y="100"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_NoReview" bpmnElement="Flow_NoReview">
+        <di:waypoint x="445" y="200"/>
+        <di:waypoint x="760" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ToApprovedGateway" bpmnElement="Flow_ToApprovedGateway">
+        <di:waypoint x="600" y="100"/>
+        <di:waypoint x="655" y="100"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Approved" bpmnElement="Flow_Approved">
+        <di:waypoint x="705" y="100"/>
+        <di:waypoint x="810" y="100"/>
+        <di:waypoint x="810" y="160"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Declined" bpmnElement="Flow_Declined">
+        <di:waypoint x="680" y="125"/>
+        <di:waypoint x="680" y="360"/>
+        <di:waypoint x="760" y="360"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ToComplete" bpmnElement="Flow_ToComplete">
+        <di:waypoint x="860" y="200"/>
+        <di:waypoint x="920" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ToEndCompleted" bpmnElement="Flow_ToEndCompleted">
+        <di:waypoint x="1020" y="200"/>
+        <di:waypoint x="1082" y="200"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ValidationFailedToReject" bpmnElement="Flow_ValidationFailedToReject">
+        <di:waypoint x="290" y="258"/>
+        <di:waypoint x="290" y="390"/>
+        <di:waypoint x="760" y="390"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_BookingFailedToReject" bpmnElement="Flow_BookingFailedToReject">
+        <di:waypoint x="810" y="258"/>
+        <di:waypoint x="810" y="340"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_ToEndRejected" bpmnElement="Flow_ToEndRejected">
+        <di:waypoint x="860" y="380"/>
+        <di:waypoint x="922" y="380"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
