@@ -30,6 +30,9 @@
         <!-- Camunda 7.23 is the line that supports Spring Boot 3.4 -->
         <camunda.version>7.23.0</camunda.version>
         <springdoc.version>2.8.6</springdoc.version>
+        <!-- Testcontainers 1.20.x (Boot 3.4 default) cannot talk to Docker Engine 29 (API >= 1.44 required).
+             1.21.4 is the first 1.x release that works with it. -->
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencies>
